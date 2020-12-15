@@ -2,7 +2,8 @@
 PDF parsing using [tesseract-ocr](https://github.com/tesseract-ocr/)
 Parse PDF into text even for the scanned copies!
 The library can be used as a stand alone application or can be integrated into other JDK 1.8+ projects.
-
+## Prerequisite
+- Tesseract needs to be installed in the system. Install it by executing `sudo apt install tesseract-ocr` on terminal.
 ## Usage
 - Download the `tesspdf-1.0.1.zip` from root directory
 - Extract the zip file in your preferred directory
@@ -81,7 +82,6 @@ println(text)
 
 ## Notes
 - JDK 1.8+ need to be installed
-- If the program fails to run, execute `sudo apt install tesseract-ocr` on terminal and try again
 
 Kudos to [ngyenq](https://github.com/nguyenq) for [tess4j](https://github.com/nguyenq/tess4j) library.
 
