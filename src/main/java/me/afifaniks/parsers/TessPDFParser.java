@@ -39,6 +39,7 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -53,6 +54,7 @@ public class TessPDFParser {
     private final Tesseract tesseract;
     private String outputFileName;
     private boolean toFile;
+    private boolean cache;
     private PrintWriter out;
 
     public TessPDFParser() {
@@ -81,11 +83,11 @@ public class TessPDFParser {
                 ArgParser.pageParser(arguments.get("pages").toString()) :
                 new ArrayList<Integer>(Collections.singletonList(-111));
         this.DPI = arguments.get("dpi") != null ? (int) arguments.get("dpi") : 150;
-        this.toFile = arguments.get("toFile") != null ? (boolean) arguments.get("toFile") : false;
+        this.toFile = arguments.get("toFile") != null && (boolean) arguments.get("toFile");
+        this.cache = arguments.get("cache") != null && (boolean) arguments.get("cache");
 
-        outputFileName = Paths.get(pdfPath)
-                .getFileName()
-                .toString()
+        outputFileName = pdfPath
+                .replaceAll("[^\\d\\w\\.]", "_")
                 .toLowerCase()
                 .replace(".pdf", ".txt");
 
@@ -115,13 +117,7 @@ public class TessPDFParser {
             }
         }
 
-        if (toFile) {
-            try {
-                out = new PrintWriter(outputFileName);
-            } catch (FileNotFoundException e) {
-                e.printStackTrace();
-            }
-        }
+
     }
 
     /**
@@ -140,6 +136,14 @@ public class TessPDFParser {
     public String convert(String pdfPath, HashMap<String, Object> args) {
         setArgs(pdfPath, args);
 
+        if (this.cache) {
+            // loadFromCache() should only be called after setArgs()
+            String pdfText = loadFromCache();
+
+            if (pdfText != null)
+                return pdfText;
+        }
+
         System.out.println("[PARSER STATUS]:" + "\t" +
                 "Parsing PDF: " + pdfPath +
                 "\tDPI: " + DPI +
@@ -148,42 +152,59 @@ public class TessPDFParser {
         PDDocument doc = null;
 
         try {
-            if (pdfPath.substring(0, 4).equalsIgnoreCase("http") ||
-                    pdfPath.substring(0, 3).equalsIgnoreCase("www")) {
-                doc = PDDocument.load(Downloader.downloadUsingStream(pdfPath));
-            } else {
-                doc = PDDocument.load(new File(pdfPath));
-            }
+            doc = loadDocument(pdfPath);
             int totalPages = doc.getNumberOfPages();
 
             PDFRenderer pdfRenderer = new PDFRenderer(doc);
-            String pdfText = "";
+            StringBuilder pdfText = new StringBuilder();
 
             if (pdfPages.get(0) == -111) {
-                for (int i = 0; i < totalPages; i++) {
-                    pdfText += convertPage(pdfRenderer, i);
-                    System.out.println("[PARSER STATUS]:\tParsing page " +
-                            (i + 1) + " of " + totalPages);
-                }
+                pdfText = new StringBuilder(convertWholeDocument(pdfRenderer, totalPages));
             } else {
-                for (Integer i : pdfPages) {
-                    if (i <= totalPages) {
-                        pdfText += convertPage(pdfRenderer, i - 1);
-                        System.out.println("[PARSER STATUS]:\tParsing page " +
-                                i + " of " + totalPages);
-                    } else {
-                        throw new IOException("[PARSER ERROR]:\tInvalid index. " + "\t" +
+                boolean fullyParsed = false;
+
+                for (Integer i: pdfPages) {
+                    if (i > totalPages) {
+                        System.out.println("[PARSER WARNING]:\tIndex out of range. Returning the full document." + "\t" +
                                 "Total Pages: " + totalPages + "\t" +
                                 "Requested Index: " + i);
+                        pdfText = new StringBuilder(convertWholeDocument(pdfRenderer, totalPages));
+
+                        fullyParsed = true;
+                        break;
+                    }
+                }
+
+                if (!fullyParsed) {
+                    for (Integer i : pdfPages) {
+                        if (i <= totalPages) {
+                            pdfText.append(convertPage(pdfRenderer, i - 1));
+                            System.out.println("[PARSER STATUS]:\tParsing page " +
+                                    i + " of " + totalPages);
+                        } else {
+                            throw new IOException("[PARSER ERROR]:\tInvalid index. " + "\t" +
+                                    "Total Pages: " + totalPages + "\t" +
+                                    "Requested Index: " + i);
+                        }
                     }
                 }
             }
 
             doc.close();
 
-            if (toFile)
-                System.out.println("[PARSER SUCCESS]: Text saved to " + outputFileName);
-            return pdfText;
+            if (toFile) {
+                try {
+                    out = new PrintWriter(outputFileName);
+                    out.append(pdfText.toString());
+                    out.flush();
+                    System.out.println("[PARSER SUCCESS]: Text saved to " + outputFileName);
+                } catch (FileNotFoundException e) {
+                    System.out.println("[PARSER FAILURE]: Couldn't save to file");
+                    e.printStackTrace();
+                }
+            }
+
+            return pdfText.toString();
 
         } catch (IOException | TesseractException e) {
             e.printStackTrace();
@@ -192,14 +213,69 @@ public class TessPDFParser {
         return null;
     }
 
+    public String loadFromCache() {
+        System.out.println("[PARSER STATUS]:\tChecking in cache");
+        try {
+            String text = null;
+
+            if (Files.exists(Paths.get(outputFileName))) {
+                System.out.println("[PARSER STATUS]:\tLoading from cache");
+                text = new String(Files.readAllBytes(Paths.get(outputFileName)));
+            }
+
+            return text;
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Calculates the number of pages from a PDF by using its local path or remote URL
+     * @param pdfPath: Local path or the URL of the PDF
+     * @return number of pages
+     */
+    public int getNumberOfPages(String pdfPath) {
+        int totalPages = -1;
+
+        try {
+            PDDocument doc = loadDocument(pdfPath);
+            totalPages = doc.getNumberOfPages();
+
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+
+        return totalPages;
+    }
+
+    private String convertWholeDocument(PDFRenderer pdfRenderer, int totalPages) throws IOException, TesseractException {
+        StringBuilder pdfText = new StringBuilder();
+
+        for (int i = 0; i < totalPages; i++) {
+            pdfText.append(convertPage(pdfRenderer, i));
+            System.out.println("[PARSER STATUS]:\tParsing page " +
+                    (i + 1) + " of " + totalPages);
+        }
+
+        return pdfText.toString();
+    }
+
+    private PDDocument loadDocument(String pdfPath) throws IOException {
+        PDDocument doc = null;
+
+        if (pdfPath.substring(0, 4).equalsIgnoreCase("http") ||
+                pdfPath.substring(0, 3).equalsIgnoreCase("www")) {
+            doc = PDDocument.load(Downloader.downloadUsingStream(pdfPath));
+        } else {
+            doc = PDDocument.load(new File(pdfPath));
+        }
+
+        return doc;
+    }
+
     private String convertPage(PDFRenderer pdfRenderer, int pageNo) throws IOException, TesseractException {
         BufferedImage bufferedImage = pdfRenderer.renderImageWithDPI(pageNo, DPI, imageType);
         String text = tesseract.doOCR(bufferedImage);
-        // Saving file
-        if (toFile) {
-            out.append(text + "\n\n");
-            out.flush();
-        }
 
         return text;
     }
