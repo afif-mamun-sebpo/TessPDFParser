@@ -28,6 +28,7 @@ package me.afifaniks.parsers;
 import me.afifaniks.downloader.Downloader;
 import net.sourceforge.tess4j.Tesseract;
 import net.sourceforge.tess4j.TesseractException;
+import org.apache.commons.io.IOUtils;
 import org.apache.log4j.Level;
 import org.apache.log4j.LogManager;
 import org.apache.log4j.Logger;
@@ -35,10 +36,7 @@ import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.rendering.ImageType;
 import org.apache.pdfbox.rendering.PDFRenderer;
 import java.awt.image.BufferedImage;
-import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.IOException;
-import java.io.PrintWriter;
+import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -53,7 +51,6 @@ public class TessPDFParser {
     private ImageType imageType = ImageType.BINARY;
     private final Tesseract tesseract;
     private String outputFileName;
-    private boolean toFile;
     private boolean cache;
     private PrintWriter out;
 
@@ -83,13 +80,11 @@ public class TessPDFParser {
                 ArgParser.pageParser(arguments.get("pages").toString()) :
                 new ArrayList<Integer>(Collections.singletonList(-111));
         this.DPI = arguments.get("dpi") != null ? (int) arguments.get("dpi") : 150;
-        this.toFile = arguments.get("toFile") != null && (boolean) arguments.get("toFile");
         this.cache = arguments.get("cache") != null && (boolean) arguments.get("cache");
 
         outputFileName = pdfPath
                 .replaceAll("[^\\d\\w\\.]", "_")
-                .toLowerCase()
-                .replace(".pdf", ".txt");
+                .toLowerCase();
 
         if (arguments.get("outputDir") != null) {
             String dirPath = (String) arguments.get("outputDir");
@@ -138,10 +133,10 @@ public class TessPDFParser {
 
         if (this.cache) {
             // loadFromCache() should only be called after setArgs()
-            String pdfText = loadFromCache();
+            String path = loadFromCache();
 
-            if (pdfText != null)
-                return pdfText;
+            if (path != null)
+                pdfPath = path;
         }
 
         System.out.println("[PARSER STATUS]:" + "\t" +
@@ -192,18 +187,6 @@ public class TessPDFParser {
 
             doc.close();
 
-            if (toFile) {
-                try {
-                    out = new PrintWriter(outputFileName);
-                    out.append(pdfText.toString());
-                    out.flush();
-                    System.out.println("[PARSER SUCCESS]: Text saved to " + outputFileName);
-                } catch (FileNotFoundException e) {
-                    System.out.println("[PARSER FAILURE]: Couldn't save to file");
-                    e.printStackTrace();
-                }
-            }
-
             return pdfText.toString();
 
         } catch (IOException | TesseractException e) {
@@ -215,18 +198,15 @@ public class TessPDFParser {
 
     public String loadFromCache() {
         System.out.println("[PARSER STATUS]:\tChecking in cache");
-        try {
-            String text = null;
+        String path = null;
 
-            if (Files.exists(Paths.get(outputFileName))) {
-                System.out.println("[PARSER STATUS]:\tLoading from cache");
-                text = new String(Files.readAllBytes(Paths.get(outputFileName)));
-            }
-
-            return text;
-        } catch (IOException e) {
+        if (Files.exists(Paths.get(outputFileName))) {
+            System.out.println("[PARSER STATUS]:\tLoading from cache");
+            path = outputFileName;
+        } else
             return null;
-        }
+
+        return path;
     }
 
     /**
@@ -260,12 +240,47 @@ public class TessPDFParser {
         return pdfText.toString();
     }
 
+    /**
+     * Loads the document from cache or URL and saves remote PDF if cache is true
+     * @param pdfPath: PDF path or URL
+     * @return PDF Document
+     * @throws IOException
+     */
     private PDDocument loadDocument(String pdfPath) throws IOException {
         PDDocument doc = null;
+        // If the file already exists in cache the value will be true otherwise false
+        boolean existsInCache = false;
 
-        if (pdfPath.substring(0, 4).equalsIgnoreCase("http") ||
-                pdfPath.substring(0, 3).equalsIgnoreCase("www")) {
-            doc = PDDocument.load(Downloader.downloadUsingStream(pdfPath));
+        if (cache) {
+            if (Files.exists(Paths.get(pdfPath)) && !Files.isDirectory(Paths.get(pdfPath))) {
+                existsInCache = true;
+            }
+        }
+
+        if ((pdfPath.substring(0, 4).equalsIgnoreCase("http") ||
+                pdfPath.substring(0, 3).equalsIgnoreCase("www")) &&
+                !existsInCache) {
+            InputStream inputStream = Downloader.downloadUsingStream(pdfPath);
+
+            // Copying ByteArrayOS to use the inputStream multiple times
+            ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
+            IOUtils.copy(inputStream, byteArrayOutputStream);
+
+            byte[] bytes = byteArrayOutputStream.toByteArray();
+            ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(bytes);
+
+            doc = PDDocument.load(byteArrayInputStream);
+
+            // Saving document if cache is true
+            if (cache) {
+                try {
+                    byteArrayInputStream.reset();
+                    IOUtils.copy(byteArrayInputStream, new FileOutputStream(new File(outputFileName)));
+                } catch (IOException e) {
+                    System.out.println("[PARSER FAILURE]: Couldn't save the file");
+                    e.printStackTrace();
+                }
+            }
         } else {
             doc = PDDocument.load(new File(pdfPath));
         }
