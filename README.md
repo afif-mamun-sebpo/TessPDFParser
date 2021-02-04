@@ -11,7 +11,7 @@ The library can be used as a stand alone application or can be integrated into o
 - Call `getNumberOfPages(String pdfPath)` to get the number of PDF pages
 - Rather than throwing an error when `pages` contains any page index that is larger than totalPage number, the program will return the whole document instead 
 ## Usage
-- Download the `TessPDFParser.zip` from root directory
+- Download the `TessPDFParser.tar.gz` from root directory
 - Extract the zip file in your preferred directory
 
 #### Using As A Stand Alone Application from Terminal
